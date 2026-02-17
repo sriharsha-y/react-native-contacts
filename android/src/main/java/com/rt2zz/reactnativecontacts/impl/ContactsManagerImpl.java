@@ -82,6 +82,10 @@ public class ContactsManagerImpl {
 
         @Override
         public void onChange(boolean selfChange) {
+            // Android fires onChange() once per database row write, not once per
+            // logical contact save. A single contact edit can trigger 5-20 rapid
+            // calls (name row, phone row, email row, etc.). Debouncing coalesces
+            // the burst into one RNContacts:changed event after writes settle.
             handler.removeCallbacks(emitRunnable);
             handler.postDelayed(emitRunnable, 500);
         }
