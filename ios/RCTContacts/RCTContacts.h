@@ -1,4 +1,4 @@
-#import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
 #import <Contacts/Contacts.h>
 #import <ContactsUI/ContactsUI.h>
 #ifdef RCT_NEW_ARCH_ENABLED
@@ -6,9 +6,9 @@
 #endif
 
 #ifdef RCT_NEW_ARCH_ENABLED
-@interface RCTContacts : NSObject <NativeContactsSpec, CNContactViewControllerDelegate>
+@interface RCTContacts : RCTEventEmitter <NativeContactsSpec, CNContactViewControllerDelegate>
 #else
-@interface RCTContacts : NSObject <RCTBridgeModule, CNContactViewControllerDelegate>
+@interface RCTContacts : RCTEventEmitter <CNContactViewControllerDelegate>
 #endif
 
 @end

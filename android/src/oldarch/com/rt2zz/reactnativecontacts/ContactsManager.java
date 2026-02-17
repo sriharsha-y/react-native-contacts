@@ -48,11 +48,24 @@ import java.util.Hashtable;
 public class ContactsManager extends ReactContextBaseJavaModule implements ActivityEventListener {
 
     private final ContactsManagerImpl contactsManagerImpl;
+    private int listenerCount = 0;
 
     public ContactsManager(ReactApplicationContext reactContext) {
         super(reactContext);
         contactsManagerImpl = new ContactsManagerImpl(reactContext, true);
         reactContext.addActivityEventListener(this);
+    }
+
+    @ReactMethod
+    public void addListener(String eventName) {
+        listenerCount++;
+        contactsManagerImpl.onListenerAdded(listenerCount);
+    }
+
+    @ReactMethod
+    public void removeListeners(int count) {
+        listenerCount = Math.max(0, listenerCount - count);
+        contactsManagerImpl.onListenerRemoved(listenerCount);
     }
 
     /*

@@ -36,6 +36,8 @@ export interface Spec extends TurboModule {
     groupIdentifier: string,
     contactIdentifiers: string[]
   ) => Promise<boolean>;
+  addListener: (eventName: string) => void;
+  removeListeners: (count: number) => void;
 }
 
 export default TurboModuleRegistry.get<Spec>("RCTContacts");

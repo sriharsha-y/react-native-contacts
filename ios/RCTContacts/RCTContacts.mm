@@ -11,8 +11,14 @@
 
     RCTPromiseResolveBlock updateContactPromise;
     CNMutableContact* selectedContact;
-    
+
     BOOL notesUsageEnabled;
+
+    // Event emission state
+    int listenerCount;
+    BOOL pendingEvent;
+    NSArray *pendingIds;
+    NSString *pendingType;
 }
 
 - (instancetype)init
@@ -35,6 +41,159 @@
 }
 
 RCT_EXPORT_MODULE();
+
+#pragma mark - RCTEventEmitter
+
+- (NSArray<NSString *> *)supportedEvents {
+    return @[@"RNContacts:changed"];
+}
+
+- (void)addListener:(NSString *)eventName {
+    [super addListener:eventName];
+    listenerCount++;
+    if (listenerCount == 1) {
+        [self startObservingContacts];
+    }
+    if (pendingEvent && [self isAppActive]) {
+        [self flushPendingEvent];
+    }
+}
+
+- (void)removeListeners:(double)count {
+    [super removeListeners:count];
+    listenerCount = MAX(0, listenerCount - (int)count);
+    if (listenerCount == 0) {
+        [self stopObservingContacts];
+    }
+}
+
+- (void)startObservingContacts {
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(contactStoreDidChange:)
+               name:CNContactStoreDidChangeNotification
+             object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(appDidBecomeActive)
+               name:UIApplicationDidBecomeActiveNotification
+             object:nil];
+}
+
+- (void)stopObservingContacts {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:CNContactStoreDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+}
+
+- (void)contactStoreDidChange:(NSNotification *)notification {
+    if (@available(iOS 13.0, *)) {
+        [self fetchChangeHistoryAndNotify];
+    } else {
+        pendingType = @"dropEverything";
+        pendingIds = nil;
+        pendingEvent = YES;
+        if (listenerCount > 0 && [self isAppActive]) {
+            [self flushPendingEvent];
+        }
+    }
+}
+
+API_AVAILABLE(ios(13.0))
+- (void)fetchChangeHistoryAndNotify {
+    NSData *tokenData = [[NSUserDefaults standardUserDefaults]
+        objectForKey:@"RNContactsHistoryToken"];
+
+    CNChangeHistoryFetchRequest *req = [[CNChangeHistoryFetchRequest alloc] init];
+    if (tokenData) {
+        NSError *unarchiveError = nil;
+        id token = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSObject class]
+                                                     fromData:tokenData
+                                                        error:&unarchiveError];
+        req.startingToken = unarchiveError ? nil : token;
+    }
+    req.shouldUnifyResults = YES;
+
+    NSMutableArray *addedIds = [NSMutableArray array];
+    NSMutableArray *updatedIds = [NSMutableArray array];
+    NSMutableArray *deletedIds = [NSMutableArray array];
+    __block BOOL didReset = NO;
+
+    NSError *error = nil;
+    CNContactStore *store = [[CNContactStore alloc] init];
+    [store enumerateChangeHistoryEventsForRequest:req
+                                           error:&error
+                                      usingBlock:^(CNChangeHistoryEvent *event, BOOL *stop) {
+        if ([event isKindOfClass:[CNChangeHistoryDropEverythingEvent class]]) {
+            didReset = YES;
+            *stop = YES;
+        } else if ([event isKindOfClass:[CNChangeHistoryAddContactEvent class]]) {
+            [addedIds addObject:((CNChangeHistoryAddContactEvent *)event).contact.identifier];
+        } else if ([event isKindOfClass:[CNChangeHistoryUpdateContactEvent class]]) {
+            [updatedIds addObject:((CNChangeHistoryUpdateContactEvent *)event).contact.identifier];
+        } else if ([event isKindOfClass:[CNChangeHistoryDeleteContactEvent class]]) {
+            [deletedIds addObject:((CNChangeHistoryDeleteContactEvent *)event).contactIdentifier];
+        }
+    }];
+
+    // Persist the new token
+    NSError *archiveError = nil;
+    NSData *newToken = [NSKeyedArchiver archivedDataWithRootObject:store.currentHistoryToken
+                                             requiringSecureCoding:NO
+                                                             error:&archiveError];
+    if (newToken && !archiveError) {
+        [[NSUserDefaults standardUserDefaults] setObject:newToken forKey:@"RNContactsHistoryToken"];
+    }
+
+    if (didReset || error) {
+        pendingType = @"dropEverything";
+        pendingIds = nil;
+    } else {
+        NSMutableArray *allIds = [NSMutableArray arrayWithArray:addedIds];
+        [allIds addObjectsFromArray:updatedIds];
+        [allIds addObjectsFromArray:deletedIds];
+        pendingType = @"update";
+        pendingIds = [allIds copy];
+    }
+    pendingEvent = YES;
+    if (listenerCount > 0 && [self isAppActive]) {
+        [self flushPendingEvent];
+    }
+}
+
+- (void)appDidBecomeActive {
+    if (pendingEvent && listenerCount > 0) {
+        [self flushPendingEvent];
+    }
+}
+
+- (BOOL)isAppActive {
+    __block BOOL active = NO;
+    if ([NSThread isMainThread]) {
+        active = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            active = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+        });
+    }
+    return active;
+}
+
+- (void)flushPendingEvent {
+    if (!pendingEvent) return;
+    NSMutableDictionary *body = [NSMutableDictionary dictionaryWithObject:@"ios" forKey:@"platform"];
+    body[@"type"] = pendingType;
+    if (pendingIds && ![pendingType isEqualToString:@"dropEverything"]) {
+        body[@"ids"] = pendingIds;
+    }
+    [self sendEventWithName:@"RNContacts:changed" body:body];
+    pendingEvent = NO;
+    pendingIds = nil;
+    pendingType = nil;
+}
+
+#pragma mark - Constants
 
 - (NSDictionary *)constantsToExport
 {

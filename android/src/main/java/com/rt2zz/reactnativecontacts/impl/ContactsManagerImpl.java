@@ -11,22 +11,28 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
+import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.ContactsContract;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.rt2zz.reactnativecontacts.ContactsProvider;
 
 import java.io.ByteArrayOutputStream;
@@ -57,6 +63,92 @@ public class ContactsManagerImpl {
 
     private Executor executor;
 
+    // Event emission state
+    private int listenerCount = 0;
+    private boolean pendingEvent = false;
+    private boolean isAppForegrounded = false;
+    private ContactsContentObserver contactsObserver;
+
+    private class ContactsContentObserver extends ContentObserver {
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private final Runnable emitRunnable = () -> {
+            pendingEvent = true;
+            if (listenerCount > 0 && isAppForegrounded) {
+                emitContactsChanged();
+            }
+        };
+
+        ContactsContentObserver() { super(null); }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            handler.removeCallbacks(emitRunnable);
+            handler.postDelayed(emitRunnable, 500);
+        }
+    }
+
+    private final LifecycleEventListener lifecycleListener = new LifecycleEventListener() {
+        @Override
+        public void onHostResume() {
+            isAppForegrounded = true;
+            if (pendingEvent && listenerCount > 0) {
+                emitContactsChanged();
+            }
+        }
+
+        @Override
+        public void onHostPause() {
+            isAppForegrounded = false;
+        }
+
+        @Override
+        public void onHostDestroy() {
+            isAppForegrounded = false;
+        }
+    };
+
+    public void startObserving() {
+        contactsObserver = new ContactsContentObserver();
+        reactApplicationContext.getContentResolver().registerContentObserver(
+            ContactsContract.Contacts.CONTENT_URI, true, contactsObserver);
+        reactApplicationContext.addLifecycleEventListener(lifecycleListener);
+    }
+
+    public void stopObserving() {
+        if (contactsObserver != null) {
+            reactApplicationContext.getContentResolver()
+                .unregisterContentObserver(contactsObserver);
+            contactsObserver = null;
+        }
+        reactApplicationContext.removeLifecycleEventListener(lifecycleListener);
+    }
+
+    public void emitContactsChanged() {
+        WritableMap params = Arguments.createMap();
+        params.putString("platform", "android");
+        params.putString("type", "unknown");
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit("RNContacts:changed", params);
+        pendingEvent = false;
+    }
+
+    public void onListenerAdded(int newCount) {
+        listenerCount = newCount;
+        if (newCount == 1) {
+            startObserving();
+        }
+        if (pendingEvent && newCount > 0) {
+            emitContactsChanged();
+        }
+    }
+
+    public void onListenerRemoved(int newCount) {
+        listenerCount = newCount;
+        if (newCount == 0) {
+            stopObserving();
+        }
+    }
 
     public ContactsManagerImpl(ReactApplicationContext reactContext, boolean useSerialExecutor) {
         this.reactApplicationContext = reactContext;

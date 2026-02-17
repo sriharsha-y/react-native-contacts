@@ -22,11 +22,24 @@ import java.io.InputStream;
 public class ContactsManager extends NativeContactsSpec implements ActivityEventListener {
 
     private final ContactsManagerImpl contactsManagerImpl;
+    private int listenerCount = 0;
 
     public ContactsManager(ReactApplicationContext reactContext) {
         super(reactContext);
         this.contactsManagerImpl = new ContactsManagerImpl(reactContext, true);
         reactContext.addActivityEventListener(this);
+    }
+
+    @Override
+    public void addListener(String eventName) {
+        listenerCount++;
+        contactsManagerImpl.onListenerAdded(listenerCount);
+    }
+
+    @Override
+    public void removeListeners(double count) {
+        listenerCount = Math.max(0, listenerCount - (int) count);
+        contactsManagerImpl.onListenerRemoved(listenerCount);
     }
 
     @Override

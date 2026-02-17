@@ -1,8 +1,17 @@
-import { NativeModules } from "react-native";
+import { NativeModules, NativeEventEmitter } from "react-native";
 import NativeContacts from "./src/NativeContacts";
 import { Contact, Group, PermissionType } from "./type";
 
 const Contacts = NativeModules.Contacts ?? NativeContacts;
+
+// Module-level singleton — NativeEventEmitter routes addListener/removeListeners
+// calls through the native module, triggering observer registration on the native side.
+const contactsEmitter = new NativeEventEmitter(Contacts);
+
+type ContactsChangedEvent =
+  | { platform: "ios"; type: "update"; ids: string[] }
+  | { platform: "ios"; type: "dropEverything" }
+  | { platform: "android"; type: "unknown" };
 
 async function getAll(): Promise<Contact[]> {
   return Contacts.getAll();
@@ -111,6 +120,14 @@ async function addContactsToGroup(groupIdentifier: string, contactIdentifiers: s
 async function removeContactsFromGroup(groupIdentifier: string, contactIdentifiers: string[]): Promise<boolean> {
   return Contacts.removeContactsFromGroup(groupIdentifier, contactIdentifiers);
 }
+
+function addChangeListener(
+  callback: (event: ContactsChangedEvent) => void
+): { remove: () => void } {
+  const sub = contactsEmitter.addListener("RNContacts:changed", callback);
+  return { remove: () => sub.remove() };
+}
+
 export default {
   getAll,
   getAllWithoutPhotos,
@@ -137,5 +154,6 @@ export default {
   addGroup,
   contactsInGroup,
   addContactsToGroup,
-  removeContactsFromGroup
+  removeContactsFromGroup,
+  addChangeListener,
 };
