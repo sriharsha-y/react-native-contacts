@@ -118,28 +118,32 @@ API_AVAILABLE(ios(13.0))
     NSMutableArray *addedIds = [NSMutableArray array];
     NSMutableArray *updatedIds = [NSMutableArray array];
     NSMutableArray *deletedIds = [NSMutableArray array];
-    __block BOOL didReset = NO;
+    BOOL didReset = NO;
 
     NSError *error = nil;
     CNContactStore *store = [[CNContactStore alloc] init];
-    [store enumerateChangeHistoryEventsForRequest:req
-                                           error:&error
-                                      usingBlock:^(CNChangeHistoryEvent *event, BOOL *stop) {
-        if ([event isKindOfClass:[CNChangeHistoryDropEverythingEvent class]]) {
-            didReset = YES;
-            *stop = YES;
-        } else if ([event isKindOfClass:[CNChangeHistoryAddContactEvent class]]) {
-            [addedIds addObject:((CNChangeHistoryAddContactEvent *)event).contact.identifier];
-        } else if ([event isKindOfClass:[CNChangeHistoryUpdateContactEvent class]]) {
-            [updatedIds addObject:((CNChangeHistoryUpdateContactEvent *)event).contact.identifier];
-        } else if ([event isKindOfClass:[CNChangeHistoryDeleteContactEvent class]]) {
-            [deletedIds addObject:((CNChangeHistoryDeleteContactEvent *)event).contactIdentifier];
-        }
-    }];
+    CNFetchResult<NSEnumerator<CNChangeHistoryEvent *> *> *fetchResult =
+        [store enumeratorForChangeHistoryFetchRequest:req error:&error];
 
-    // Persist the new token
+    if (fetchResult) {
+        for (CNChangeHistoryEvent *event in fetchResult.value) {
+            if ([event isKindOfClass:[CNChangeHistoryDropEverythingEvent class]]) {
+                didReset = YES;
+                break;
+            } else if ([event isKindOfClass:[CNChangeHistoryAddContactEvent class]]) {
+                [addedIds addObject:((CNChangeHistoryAddContactEvent *)event).contact.identifier];
+            } else if ([event isKindOfClass:[CNChangeHistoryUpdateContactEvent class]]) {
+                [updatedIds addObject:((CNChangeHistoryUpdateContactEvent *)event).contact.identifier];
+            } else if ([event isKindOfClass:[CNChangeHistoryDeleteContactEvent class]]) {
+                [deletedIds addObject:((CNChangeHistoryDeleteContactEvent *)event).contactIdentifier];
+            }
+        }
+    }
+
+    // Persist the new token from the fetch result (or fall back to store's current token)
+    NSData *tokenToSave = fetchResult ? fetchResult.currentHistoryToken : store.currentHistoryToken;
     NSError *archiveError = nil;
-    NSData *newToken = [NSKeyedArchiver archivedDataWithRootObject:store.currentHistoryToken
+    NSData *newToken = [NSKeyedArchiver archivedDataWithRootObject:tokenToSave
                                              requiringSecureCoding:NO
                                                              error:&archiveError];
     if (newToken && !archiveError) {
