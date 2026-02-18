@@ -102,8 +102,8 @@ RCT_EXPORT_MODULE();
         if (pendingFetchBlock) {
             dispatch_block_cancel(pendingFetchBlock);
         }
-        __weak typeof(self) weakSelf = self;
-        pendingFetchBlock = dispatch_block_create(0, ^{
+        __weak __typeof__(self) weakSelf = self;
+        pendingFetchBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
             [weakSelf fetchChangeHistoryAndNotify];
         });
         dispatch_after(
