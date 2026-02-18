@@ -17,8 +17,10 @@
     // Event emission state
     int listenerCount;
     BOOL pendingEvent;
-    NSArray *pendingIds;
-    NSString *pendingType;
+    BOOL pendingDropEverything;
+    NSArray *pendingAddedIds;
+    NSArray *pendingUpdatedIds;
+    NSArray *pendingDeletedIds;
 }
 
 - (instancetype)init
@@ -91,8 +93,7 @@ RCT_EXPORT_MODULE();
     if (@available(iOS 13.0, *)) {
         [self fetchChangeHistoryAndNotify];
     } else {
-        pendingType = @"dropEverything";
-        pendingIds = nil;
+        pendingDropEverything = YES;
         pendingEvent = YES;
         if (listenerCount > 0 && [self isAppActive]) {
             [self flushPendingEvent];
@@ -100,7 +101,6 @@ RCT_EXPORT_MODULE();
     }
 }
 
-API_AVAILABLE(ios(13.0))
 - (void)fetchChangeHistoryAndNotify {
     NSData *tokenData = [[NSUserDefaults standardUserDefaults]
         objectForKey:@"RNContactsHistoryToken"];
@@ -114,6 +114,11 @@ API_AVAILABLE(ios(13.0))
         req.startingToken = unarchiveError ? nil : token;
     }
     req.shouldUnifyResults = YES;
+    // Required so that the `contact` property on add/update events has its
+    // identifier field populated. Without this, contact.identifier is nil and
+    // calling [array addObject:nil] raises an NSInvalidArgumentException that
+    // silently exits the enumeration loop, leaving addedIds/updatedIds empty.
+    req.additionalContactKeyDescriptors = @[CNContactIdentifierKey];
 
     NSMutableArray *addedIds = [NSMutableArray array];
     NSMutableArray *updatedIds = [NSMutableArray array];
@@ -131,9 +136,11 @@ API_AVAILABLE(ios(13.0))
                 didReset = YES;
                 break;
             } else if ([event isKindOfClass:[CNChangeHistoryAddContactEvent class]]) {
-                [addedIds addObject:((CNChangeHistoryAddContactEvent *)event).contact.identifier];
+                NSString *identifier = ((CNChangeHistoryAddContactEvent *)event).contact.identifier;
+                if (identifier) { [addedIds addObject:identifier]; }
             } else if ([event isKindOfClass:[CNChangeHistoryUpdateContactEvent class]]) {
-                [updatedIds addObject:((CNChangeHistoryUpdateContactEvent *)event).contact.identifier];
+                NSString *identifier = ((CNChangeHistoryUpdateContactEvent *)event).contact.identifier;
+                if (identifier) { [updatedIds addObject:identifier]; }
             } else if ([event isKindOfClass:[CNChangeHistoryDeleteContactEvent class]]) {
                 [deletedIds addObject:((CNChangeHistoryDeleteContactEvent *)event).contactIdentifier];
             }
@@ -151,14 +158,11 @@ API_AVAILABLE(ios(13.0))
     }
 
     if (didReset || error) {
-        pendingType = @"dropEverything";
-        pendingIds = nil;
+        pendingDropEverything = YES;
     } else {
-        NSMutableArray *allIds = [NSMutableArray arrayWithArray:addedIds];
-        [allIds addObjectsFromArray:updatedIds];
-        [allIds addObjectsFromArray:deletedIds];
-        pendingType = @"update";
-        pendingIds = [allIds copy];
+        pendingAddedIds = [addedIds copy];
+        pendingUpdatedIds = [updatedIds copy];
+        pendingDeletedIds = [deletedIds copy];
     }
     pendingEvent = YES;
     if (listenerCount > 0 && [self isAppActive]) {
@@ -187,14 +191,20 @@ API_AVAILABLE(ios(13.0))
 - (void)flushPendingEvent {
     if (!pendingEvent) return;
     NSMutableDictionary *body = [NSMutableDictionary dictionaryWithObject:@"ios" forKey:@"platform"];
-    body[@"type"] = pendingType;
-    if (pendingIds && ![pendingType isEqualToString:@"dropEverything"]) {
-        body[@"ids"] = pendingIds;
+    if (pendingDropEverything) {
+        body[@"type"] = @"dropEverything";
+    } else {
+        body[@"type"] = @"update";
+        body[@"addedIds"]   = pendingAddedIds   ?: @[];
+        body[@"updatedIds"] = pendingUpdatedIds ?: @[];
+        body[@"deletedIds"] = pendingDeletedIds ?: @[];
     }
     [self sendEventWithName:@"RNContacts:changed" body:body];
     pendingEvent = NO;
-    pendingIds = nil;
-    pendingType = nil;
+    pendingDropEverything = NO;
+    pendingAddedIds = nil;
+    pendingUpdatedIds = nil;
+    pendingDeletedIds = nil;
 }
 
 #pragma mark - Constants
