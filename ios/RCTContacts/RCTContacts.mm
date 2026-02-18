@@ -21,6 +21,7 @@
     NSArray *pendingAddedIds;
     NSArray *pendingUpdatedIds;
     NSArray *pendingDeletedIds;
+    dispatch_block_t pendingFetchBlock;
 }
 
 - (instancetype)init
@@ -87,11 +88,29 @@ RCT_EXPORT_MODULE();
         name:CNContactStoreDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] removeObserver:self
         name:UIApplicationDidBecomeActiveNotification object:nil];
+    if (pendingFetchBlock) {
+        dispatch_block_cancel(pendingFetchBlock);
+        pendingFetchBlock = nil;
+    }
 }
 
 - (void)contactStoreDidChange:(NSNotification *)notification {
     if (@available(iOS 13.0, *)) {
-        [self fetchChangeHistoryAndNotify];
+        // CNContactStoreDidChangeNotification fires multiple times per logical
+        // change (known iOS OS behaviour). Debounce so only one fetch runs after
+        // the burst settles — same rationale as Android's Handler debounce.
+        if (pendingFetchBlock) {
+            dispatch_block_cancel(pendingFetchBlock);
+        }
+        __weak typeof(self) weakSelf = self;
+        pendingFetchBlock = dispatch_block_create(0, ^{
+            [weakSelf fetchChangeHistoryAndNotify];
+        });
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(200 * NSEC_PER_MSEC)),
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0),
+            pendingFetchBlock
+        );
     } else {
         pendingDropEverything = YES;
         pendingEvent = YES;
@@ -159,6 +178,9 @@ RCT_EXPORT_MODULE();
 
     if (didReset || error) {
         pendingDropEverything = YES;
+    } else if (addedIds.count == 0 && updatedIds.count == 0 && deletedIds.count == 0) {
+        // Nothing changed — likely a duplicate notification. Don't emit.
+        return;
     } else {
         pendingAddedIds = [addedIds copy];
         pendingUpdatedIds = [updatedIds copy];
