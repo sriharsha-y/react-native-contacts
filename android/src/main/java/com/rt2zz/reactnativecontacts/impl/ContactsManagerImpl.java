@@ -80,14 +80,11 @@ public class ContactsManagerImpl {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable resumeQueryRunnable = () -> {
-        if (pendingDirty && listenerCount > 0) {
-            pendingDirty = false;
-            executor.execute(() -> queryChangesAndEmit());
-        }
+        pendingDirty = false;
+        executor.execute(() -> queryChangesAndEmit());
     };
 
     private class ContactsContentObserver extends ContentObserver {
-        private final Handler handler = new Handler(Looper.getMainLooper());
         private final Runnable emitRunnable = () -> {
             executor.execute(() -> queryChangesAndEmit());
         };
@@ -100,9 +97,9 @@ public class ContactsManagerImpl {
             // logical contact save. A single contact edit can trigger 5-20 rapid
             // calls (name row, phone row, email row, etc.). Debouncing coalesces
             // the burst into one RNContacts:changed event after writes settle.
-            handler.removeCallbacks(emitRunnable);
+            mainHandler.removeCallbacks(emitRunnable);
             if (isAppForegrounded) {
-                handler.postDelayed(emitRunnable, 500);
+                mainHandler.postDelayed(emitRunnable, 500);
             } else {
                 pendingDirty = true;
             }
