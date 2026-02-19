@@ -18,7 +18,7 @@
     int listenerCount;
     BOOL pendingEvent;
     BOOL pendingDropEverything;
-    NSArray *pendingUpsertedIds;
+    NSArray *pendingUpsertedContacts;
     NSArray *pendingDeletedIds;
     dispatch_block_t pendingFetchBlock;
 }
@@ -174,10 +174,37 @@ RCT_EXPORT_MODULE();
         [[NSUserDefaults standardUserDefaults] setObject:newToken forKey:@"RNContactsHistoryToken"];
     }
 
-    // Dispatch state update to main thread to avoid race with appDidBecomeActive
-    NSArray *upserted = [upsertedIds copy];
-    NSArray *deleted = [deletedIds copy];
     BOOL reset = didReset || (error != nil);
+
+    // Fetch full contact objects for upserted IDs (still on background queue)
+    NSMutableArray *upsertedContacts = [NSMutableArray array];
+    if (!reset && upsertedIds.count > 0) {
+        NSMutableArray *keysToFetch = [NSMutableArray arrayWithArray:@[
+            CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
+            CNContactFamilyNameKey, CNContactGivenNameKey, CNContactMiddleNameKey,
+            CNContactPostalAddressesKey, CNContactOrganizationNameKey,
+            CNContactJobTitleKey, CNContactImageDataAvailableKey,
+            CNContactUrlAddressesKey, CNContactBirthdayKey,
+            CNContactInstantMessageAddressesKey
+        ]];
+        if (notesUsageEnabled) {
+            [keysToFetch addObject:CNContactNoteKey];
+        }
+        for (NSString *identifier in upsertedIds) {
+            NSError *fetchError = nil;
+            CNContact *fullContact = [store unifiedContactWithIdentifier:identifier
+                                                            keysToFetch:keysToFetch
+                                                                  error:&fetchError];
+            if (fullContact) {
+                [upsertedContacts addObject:
+                    [self contactToDictionary:fullContact withThumbnails:NO]];
+            }
+        }
+    }
+
+    // Dispatch state update to main thread to avoid race with appDidBecomeActive
+    NSArray *upserted = [upsertedContacts copy];
+    NSArray *deleted = [deletedIds copy];
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (reset) {
@@ -186,7 +213,7 @@ RCT_EXPORT_MODULE();
             // Nothing changed — likely a duplicate notification. Don't emit.
             return;
         } else {
-            pendingUpsertedIds = upserted;
+            pendingUpsertedContacts = upserted;
             pendingDeletedIds = deleted;
         }
         pendingEvent = YES;
@@ -222,13 +249,13 @@ RCT_EXPORT_MODULE();
         body[@"type"] = @"dropEverything";
     } else {
         body[@"type"] = @"update";
-        body[@"upsertedIds"] = pendingUpsertedIds ?: @[];
-        body[@"deletedIds"]  = pendingDeletedIds  ?: @[];
+        body[@"upsertedContacts"] = pendingUpsertedContacts ?: @[];
+        body[@"deletedIds"]       = pendingDeletedIds       ?: @[];
     }
     [self sendEventWithName:@"RNContacts:changed" body:body];
     pendingEvent = NO;
     pendingDropEverything = NO;
-    pendingUpsertedIds = nil;
+    pendingUpsertedContacts = nil;
     pendingDeletedIds = nil;
 }
 

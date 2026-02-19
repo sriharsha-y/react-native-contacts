@@ -72,7 +72,7 @@ public class ContactsManagerImpl {
     private boolean isAppForegrounded = false;
     private ContactsContentObserver contactsObserver;
     private long lastSyncTimestamp = System.currentTimeMillis();
-    private WritableArray pendingUpsertedIds;
+    private WritableArray pendingUpsertedContacts;
     private WritableArray pendingDeletedIds;
 
     private class ContactsContentObserver extends ContentObserver {
@@ -134,11 +134,11 @@ public class ContactsManagerImpl {
         long syncTime = lastSyncTimestamp;
         lastSyncTimestamp = System.currentTimeMillis();
 
-        WritableArray upsertedIds = Arguments.createArray();
+        ArrayList<String> upsertedIdsList = new ArrayList<>();
         WritableArray deletedIds = Arguments.createArray();
         boolean hasError = false;
 
-        // Query added/updated contacts since last sync
+        // Query added/updated contact IDs since last sync
         try (Cursor cursor = reactApplicationContext.getContentResolver().query(
                 ContactsContract.Contacts.CONTENT_URI,
                 new String[]{ ContactsContract.Contacts._ID },
@@ -148,7 +148,7 @@ public class ContactsManagerImpl {
             if (cursor != null) {
                 int idIdx = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID);
                 while (cursor.moveToNext()) {
-                    upsertedIds.pushString(cursor.getString(idIdx));
+                    upsertedIdsList.add(cursor.getString(idIdx));
                 }
             }
         } catch (Exception e) {
@@ -173,8 +173,21 @@ public class ContactsManagerImpl {
             hasError = true;
         }
 
+        // Fetch full contact objects for upserted IDs
+        WritableArray upsertedContacts = Arguments.createArray();
+        if (!hasError && !upsertedIdsList.isEmpty()) {
+            ContentResolver cr = reactApplicationContext.getContentResolver();
+            ContactsProvider contactsProvider = new ContactsProvider(cr);
+            for (String contactId : upsertedIdsList) {
+                WritableMap contact = contactsProvider.getContactById(contactId);
+                if (contact != null) {
+                    upsertedContacts.pushMap(contact);
+                }
+            }
+        }
+
         final boolean error = hasError;
-        final WritableArray upserted = upsertedIds;
+        final WritableArray upserted = upsertedContacts;
         final WritableArray deleted = deletedIds;
 
         // Post state update back to main thread to avoid race with onHostResume
@@ -186,7 +199,7 @@ public class ContactsManagerImpl {
                 // Duplicate notification — nothing actually changed. Don't emit.
                 return;
             } else {
-                pendingUpsertedIds = upserted;
+                pendingUpsertedContacts = upserted;
                 pendingDeletedIds = deleted;
                 pendingEvent = true;
             }
@@ -204,8 +217,8 @@ public class ContactsManagerImpl {
             params.putString("type", "dropEverything");
         } else {
             params.putString("type", "update");
-            params.putArray("upsertedIds",
-                pendingUpsertedIds != null ? pendingUpsertedIds : Arguments.createArray());
+            params.putArray("upsertedContacts",
+                pendingUpsertedContacts != null ? pendingUpsertedContacts : Arguments.createArray());
             params.putArray("deletedIds",
                 pendingDeletedIds != null ? pendingDeletedIds : Arguments.createArray());
         }
@@ -214,7 +227,7 @@ public class ContactsManagerImpl {
             .emit("RNContacts:changed", params);
         pendingEvent = false;
         pendingDropEverything = false;
-        pendingUpsertedIds = null;
+        pendingUpsertedContacts = null;
         pendingDeletedIds = null;
     }
 

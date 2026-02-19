@@ -9,7 +9,7 @@ const Contacts = NativeModules.Contacts ?? NativeContacts;
 const contactsEmitter = new NativeEventEmitter(Contacts);
 
 type ContactsChangedEvent =
-  | { platform: "ios" | "android"; type: "update"; upsertedIds: string[]; deletedIds: string[] }
+  | { platform: "ios" | "android"; type: "update"; upsertedContacts: Contact[]; deletedIds: string[] }
   | { platform: "ios" | "android"; type: "dropEverything" };
 
 async function getAll(): Promise<Contact[]> {

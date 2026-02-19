@@ -54,7 +54,7 @@ export function removeContactsFromGroup(
 ): Promise<boolean>;
 
 export type ContactsChangedEvent =
-  | { platform: "ios" | "android"; type: "update"; upsertedIds: string[]; deletedIds: string[] }
+  | { platform: "ios" | "android"; type: "update"; upsertedContacts: Contact[]; deletedIds: string[] }
   | { platform: "ios" | "android"; type: "dropEverything" };
 
 export function addChangeListener(
