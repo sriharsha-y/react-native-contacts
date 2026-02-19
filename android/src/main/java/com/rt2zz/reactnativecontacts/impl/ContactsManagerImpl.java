@@ -72,6 +72,7 @@ public class ContactsManagerImpl {
     private boolean isAppForegrounded = false;
     private ContactsContentObserver contactsObserver;
     private long lastSyncTimestamp = System.currentTimeMillis();
+    private long pendingSyncTimestamp;
     private WritableArray pendingUpsertedContacts;
     private WritableArray pendingDeletedIds;
 
@@ -85,6 +86,8 @@ public class ContactsManagerImpl {
     private class ContactsContentObserver extends ContentObserver {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final Runnable emitRunnable = () -> {
+            // Cancel pending flush — query will reschedule after posting results
+            flushHandler.removeCallbacks(flushRunnable);
             executor.execute(() -> queryChangesAndEmit());
         };
 
@@ -144,8 +147,10 @@ public class ContactsManagerImpl {
     }
 
     private void queryChangesAndEmit() {
+        // Don't update lastSyncTimestamp here — defer until after emission so
+        // subsequent queries see ALL changes since the last emission.
         long syncTime = lastSyncTimestamp;
-        lastSyncTimestamp = System.currentTimeMillis();
+        long currentTime = System.currentTimeMillis();
 
         ArrayList<String> upsertedIdsList = new ArrayList<>();
         WritableArray deletedIds = Arguments.createArray();
@@ -202,9 +207,11 @@ public class ContactsManagerImpl {
         final boolean error = hasError;
         final WritableArray upserted = upsertedContacts;
         final WritableArray deleted = deletedIds;
+        final long syncTimestamp = currentTime;
 
         // Post state update back to main thread to avoid race with onHostResume
         new Handler(Looper.getMainLooper()).post(() -> {
+            pendingSyncTimestamp = syncTimestamp;
             if (error) {
                 pendingDropEverything = true;
                 pendingEvent = true;
@@ -212,21 +219,10 @@ public class ContactsManagerImpl {
                 // Duplicate notification — nothing actually changed. Don't emit.
                 return;
             } else {
-                // Accumulate instead of replace so rapid changes batch into one event
-                if (pendingUpsertedContacts != null) {
-                    for (int i = 0; i < upserted.size(); i++) {
-                        pendingUpsertedContacts.pushMap((WritableMap) upserted.getMap(i));
-                    }
-                } else {
-                    pendingUpsertedContacts = upserted;
-                }
-                if (pendingDeletedIds != null) {
-                    for (int i = 0; i < deleted.size(); i++) {
-                        pendingDeletedIds.pushString(deleted.getString(i));
-                    }
-                } else {
-                    pendingDeletedIds = deleted;
-                }
+                // Replace — this query saw ALL changes since lastSyncTimestamp
+                // (not updated until emission), so its result is a superset.
+                pendingUpsertedContacts = upserted;
+                pendingDeletedIds = deleted;
                 pendingEvent = true;
             }
 
@@ -252,6 +248,8 @@ public class ContactsManagerImpl {
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit("RNContacts:changed", params);
+        // Only now advance the timestamp — next query cycle starts fresh
+        lastSyncTimestamp = pendingSyncTimestamp;
         pendingEvent = false;
         pendingDropEverything = false;
         pendingUpsertedContacts = null;
