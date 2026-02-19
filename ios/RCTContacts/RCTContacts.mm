@@ -217,8 +217,7 @@ RCT_EXPORT_MODULE();
             pendingDeletedIds = deleted;
         }
         pendingEvent = YES;
-        if (listenerCount > 0 &&
-            [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+        if (listenerCount > 0 && [self isAppActive]) {
             [self flushPendingEvent];
         }
     });
