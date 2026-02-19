@@ -76,18 +76,19 @@ public class ContactsManagerImpl {
     private WritableArray pendingUpsertedContacts;
     private WritableArray pendingDeletedIds;
 
-    private final Handler flushHandler = new Handler(Looper.getMainLooper());
-    private final Runnable flushRunnable = () -> {
-        if (pendingEvent && listenerCount > 0 && isAppForegrounded) {
-            emitContactsChanged();
+    private boolean pendingDirty = false;
+
+    private final Handler resumeHandler = new Handler(Looper.getMainLooper());
+    private final Runnable resumeQueryRunnable = () -> {
+        if (pendingDirty && listenerCount > 0) {
+            pendingDirty = false;
+            executor.execute(() -> queryChangesAndEmit());
         }
     };
 
     private class ContactsContentObserver extends ContentObserver {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final Runnable emitRunnable = () -> {
-            // Cancel pending flush — query will reschedule after posting results
-            flushHandler.removeCallbacks(flushRunnable);
             executor.execute(() -> queryChangesAndEmit());
         };
 
@@ -100,9 +101,11 @@ public class ContactsManagerImpl {
             // calls (name row, phone row, email row, etc.). Debouncing coalesces
             // the burst into one RNContacts:changed event after writes settle.
             handler.removeCallbacks(emitRunnable);
-            handler.postDelayed(emitRunnable, 500);
-            // Cancel pending flush — more changes may be arriving
-            flushHandler.removeCallbacks(flushRunnable);
+            if (isAppForegrounded) {
+                handler.postDelayed(emitRunnable, 500);
+            } else {
+                pendingDirty = true;
+            }
         }
     }
 
@@ -110,22 +113,27 @@ public class ContactsManagerImpl {
         @Override
         public void onHostResume() {
             isAppForegrounded = true;
-            if (pendingEvent && listenerCount > 0) {
-                // Debounced flush — give pending observer debounces and queries
-                // time to complete and accumulate before emitting.
-                flushHandler.removeCallbacks(flushRunnable);
-                flushHandler.postDelayed(flushRunnable, 500);
+            if (pendingDirty && listenerCount > 0) {
+                // Debounce: absorbs late ContentObserver notifications and
+                // task-switcher flickers (onHostPause cancels if not stable).
+                resumeHandler.removeCallbacks(resumeQueryRunnable);
+                resumeHandler.postDelayed(resumeQueryRunnable, 500);
+            } else if (pendingEvent && listenerCount > 0) {
+                // Foreground query completed before backgrounding — results are settled.
+                emitContactsChanged();
             }
         }
 
         @Override
         public void onHostPause() {
             isAppForegrounded = false;
+            resumeHandler.removeCallbacks(resumeQueryRunnable);
         }
 
         @Override
         public void onHostDestroy() {
             isAppForegrounded = false;
+            resumeHandler.removeCallbacks(resumeQueryRunnable);
         }
     };
 
@@ -143,7 +151,8 @@ public class ContactsManagerImpl {
             contactsObserver = null;
         }
         reactApplicationContext.removeLifecycleEventListener(lifecycleListener);
-        flushHandler.removeCallbacks(flushRunnable);
+        resumeHandler.removeCallbacks(resumeQueryRunnable);
+        pendingDirty = false;
     }
 
     private void queryChangesAndEmit() {
@@ -222,8 +231,7 @@ public class ContactsManagerImpl {
             }
 
             if (listenerCount > 0 && isAppForegrounded) {
-                flushHandler.removeCallbacks(flushRunnable);
-                flushHandler.postDelayed(flushRunnable, 500);
+                emitContactsChanged();
             }
         });
     }
