@@ -9,9 +9,8 @@ const Contacts = NativeModules.Contacts ?? NativeContacts;
 const contactsEmitter = new NativeEventEmitter(Contacts);
 
 type ContactsChangedEvent =
-  | { platform: "ios"; type: "update"; addedIds: string[]; updatedIds: string[]; deletedIds: string[] }
-  | { platform: "ios"; type: "dropEverything" }
-  | { platform: "android"; type: "unknown" };
+  | { platform: "ios" | "android"; type: "update"; upsertedIds: string[]; deletedIds: string[] }
+  | { platform: "ios" | "android"; type: "dropEverything" };
 
 async function getAll(): Promise<Contact[]> {
   return Contacts.getAll();

@@ -18,8 +18,7 @@
     int listenerCount;
     BOOL pendingEvent;
     BOOL pendingDropEverything;
-    NSArray *pendingAddedIds;
-    NSArray *pendingUpdatedIds;
+    NSArray *pendingUpsertedIds;
     NSArray *pendingDeletedIds;
     dispatch_block_t pendingFetchBlock;
 }
@@ -136,11 +135,10 @@ RCT_EXPORT_MODULE();
     // Required so that the `contact` property on add/update events has its
     // identifier field populated. Without this, contact.identifier is nil and
     // calling [array addObject:nil] raises an NSInvalidArgumentException that
-    // silently exits the enumeration loop, leaving addedIds/updatedIds empty.
+    // silently exits the enumeration loop, leaving upsertedIds empty.
     req.additionalContactKeyDescriptors = @[CNContactIdentifierKey];
 
-    NSMutableArray *addedIds = [NSMutableArray array];
-    NSMutableArray *updatedIds = [NSMutableArray array];
+    NSMutableArray *upsertedIds = [NSMutableArray array];
     NSMutableArray *deletedIds = [NSMutableArray array];
     BOOL didReset = NO;
 
@@ -156,10 +154,10 @@ RCT_EXPORT_MODULE();
                 break;
             } else if ([event isKindOfClass:[CNChangeHistoryAddContactEvent class]]) {
                 NSString *identifier = ((CNChangeHistoryAddContactEvent *)event).contact.identifier;
-                if (identifier) { [addedIds addObject:identifier]; }
+                if (identifier) { [upsertedIds addObject:identifier]; }
             } else if ([event isKindOfClass:[CNChangeHistoryUpdateContactEvent class]]) {
                 NSString *identifier = ((CNChangeHistoryUpdateContactEvent *)event).contact.identifier;
-                if (identifier) { [updatedIds addObject:identifier]; }
+                if (identifier) { [upsertedIds addObject:identifier]; }
             } else if ([event isKindOfClass:[CNChangeHistoryDeleteContactEvent class]]) {
                 [deletedIds addObject:((CNChangeHistoryDeleteContactEvent *)event).contactIdentifier];
             }
@@ -176,20 +174,27 @@ RCT_EXPORT_MODULE();
         [[NSUserDefaults standardUserDefaults] setObject:newToken forKey:@"RNContactsHistoryToken"];
     }
 
-    if (didReset || error) {
-        pendingDropEverything = YES;
-    } else if (addedIds.count == 0 && updatedIds.count == 0 && deletedIds.count == 0) {
-        // Nothing changed — likely a duplicate notification. Don't emit.
-        return;
-    } else {
-        pendingAddedIds = [addedIds copy];
-        pendingUpdatedIds = [updatedIds copy];
-        pendingDeletedIds = [deletedIds copy];
-    }
-    pendingEvent = YES;
-    if (listenerCount > 0 && [self isAppActive]) {
-        [self flushPendingEvent];
-    }
+    // Dispatch state update to main thread to avoid race with appDidBecomeActive
+    NSArray *upserted = [upsertedIds copy];
+    NSArray *deleted = [deletedIds copy];
+    BOOL reset = didReset || (error != nil);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (reset) {
+            pendingDropEverything = YES;
+        } else if (upserted.count == 0 && deleted.count == 0) {
+            // Nothing changed — likely a duplicate notification. Don't emit.
+            return;
+        } else {
+            pendingUpsertedIds = upserted;
+            pendingDeletedIds = deleted;
+        }
+        pendingEvent = YES;
+        if (listenerCount > 0 &&
+            [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+            [self flushPendingEvent];
+        }
+    });
 }
 
 - (void)appDidBecomeActive {
@@ -217,15 +222,13 @@ RCT_EXPORT_MODULE();
         body[@"type"] = @"dropEverything";
     } else {
         body[@"type"] = @"update";
-        body[@"addedIds"]   = pendingAddedIds   ?: @[];
-        body[@"updatedIds"] = pendingUpdatedIds ?: @[];
-        body[@"deletedIds"] = pendingDeletedIds ?: @[];
+        body[@"upsertedIds"] = pendingUpsertedIds ?: @[];
+        body[@"deletedIds"]  = pendingDeletedIds  ?: @[];
     }
     [self sendEventWithName:@"RNContacts:changed" body:body];
     pendingEvent = NO;
     pendingDropEverything = NO;
-    pendingAddedIds = nil;
-    pendingUpdatedIds = nil;
+    pendingUpsertedIds = nil;
     pendingDeletedIds = nil;
 }
 

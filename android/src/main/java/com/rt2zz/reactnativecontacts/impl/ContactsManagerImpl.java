@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.database.ContentObserver;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
@@ -41,6 +42,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+
 import java.util.ArrayList;
 import java.util.Hashtable;
 import java.util.Objects;
@@ -66,16 +68,17 @@ public class ContactsManagerImpl {
     // Event emission state
     private int listenerCount = 0;
     private boolean pendingEvent = false;
+    private boolean pendingDropEverything = false;
     private boolean isAppForegrounded = false;
     private ContactsContentObserver contactsObserver;
+    private long lastSyncTimestamp = System.currentTimeMillis();
+    private WritableArray pendingUpsertedIds;
+    private WritableArray pendingDeletedIds;
 
     private class ContactsContentObserver extends ContentObserver {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final Runnable emitRunnable = () -> {
-            pendingEvent = true;
-            if (listenerCount > 0 && isAppForegrounded) {
-                emitContactsChanged();
-            }
+            executor.execute(() -> queryChangesAndEmit());
         };
 
         ContactsContentObserver() { super(null); }
@@ -127,14 +130,92 @@ public class ContactsManagerImpl {
         reactApplicationContext.removeLifecycleEventListener(lifecycleListener);
     }
 
+    private void queryChangesAndEmit() {
+        long syncTime = lastSyncTimestamp;
+        lastSyncTimestamp = System.currentTimeMillis();
+
+        WritableArray upsertedIds = Arguments.createArray();
+        WritableArray deletedIds = Arguments.createArray();
+        boolean hasError = false;
+
+        // Query added/updated contacts since last sync
+        try (Cursor cursor = reactApplicationContext.getContentResolver().query(
+                ContactsContract.Contacts.CONTENT_URI,
+                new String[]{ ContactsContract.Contacts._ID },
+                ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP + " > ?",
+                new String[]{ String.valueOf(syncTime) },
+                null)) {
+            if (cursor != null) {
+                int idIdx = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID);
+                while (cursor.moveToNext()) {
+                    upsertedIds.pushString(cursor.getString(idIdx));
+                }
+            }
+        } catch (Exception e) {
+            hasError = true;
+        }
+
+        // Query deleted contacts since last sync
+        try (Cursor cursor = reactApplicationContext.getContentResolver().query(
+                ContactsContract.DeletedContacts.CONTENT_URI,
+                new String[]{ ContactsContract.DeletedContacts.CONTACT_ID },
+                ContactsContract.DeletedContacts.CONTACT_DELETED_TIMESTAMP + " > ?",
+                new String[]{ String.valueOf(syncTime) },
+                null)) {
+            if (cursor != null) {
+                int idIdx = cursor.getColumnIndexOrThrow(
+                    ContactsContract.DeletedContacts.CONTACT_ID);
+                while (cursor.moveToNext()) {
+                    deletedIds.pushString(String.valueOf(cursor.getLong(idIdx)));
+                }
+            }
+        } catch (Exception e) {
+            hasError = true;
+        }
+
+        final boolean error = hasError;
+        final WritableArray upserted = upsertedIds;
+        final WritableArray deleted = deletedIds;
+
+        // Post state update back to main thread to avoid race with onHostResume
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (error) {
+                pendingDropEverything = true;
+                pendingEvent = true;
+            } else if (upserted.size() == 0 && deleted.size() == 0) {
+                // Duplicate notification — nothing actually changed. Don't emit.
+                return;
+            } else {
+                pendingUpsertedIds = upserted;
+                pendingDeletedIds = deleted;
+                pendingEvent = true;
+            }
+
+            if (listenerCount > 0 && isAppForegrounded) {
+                emitContactsChanged();
+            }
+        });
+    }
+
     public void emitContactsChanged() {
         WritableMap params = Arguments.createMap();
         params.putString("platform", "android");
-        params.putString("type", "unknown");
+        if (pendingDropEverything) {
+            params.putString("type", "dropEverything");
+        } else {
+            params.putString("type", "update");
+            params.putArray("upsertedIds",
+                pendingUpsertedIds != null ? pendingUpsertedIds : Arguments.createArray());
+            params.putArray("deletedIds",
+                pendingDeletedIds != null ? pendingDeletedIds : Arguments.createArray());
+        }
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit("RNContacts:changed", params);
         pendingEvent = false;
+        pendingDropEverything = false;
+        pendingUpsertedIds = null;
+        pendingDeletedIds = null;
     }
 
     public void onListenerAdded(int newCount) {
