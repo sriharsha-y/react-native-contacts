@@ -78,7 +78,7 @@ public class ContactsManagerImpl {
 
     private boolean pendingDirty = false;
 
-    private final Handler resumeHandler = new Handler(Looper.getMainLooper());
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable resumeQueryRunnable = () -> {
         if (pendingDirty && listenerCount > 0) {
             pendingDirty = false;
@@ -116,8 +116,8 @@ public class ContactsManagerImpl {
             if (pendingDirty && listenerCount > 0) {
                 // Debounce: absorbs late ContentObserver notifications and
                 // task-switcher flickers (onHostPause cancels if not stable).
-                resumeHandler.removeCallbacks(resumeQueryRunnable);
-                resumeHandler.postDelayed(resumeQueryRunnable, 500);
+                mainHandler.removeCallbacks(resumeQueryRunnable);
+                mainHandler.postDelayed(resumeQueryRunnable, 500);
             } else if (pendingEvent && listenerCount > 0) {
                 // Foreground query completed before backgrounding — results are settled.
                 emitContactsChanged();
@@ -127,13 +127,13 @@ public class ContactsManagerImpl {
         @Override
         public void onHostPause() {
             isAppForegrounded = false;
-            resumeHandler.removeCallbacks(resumeQueryRunnable);
+            mainHandler.removeCallbacks(resumeQueryRunnable);
         }
 
         @Override
         public void onHostDestroy() {
             isAppForegrounded = false;
-            resumeHandler.removeCallbacks(resumeQueryRunnable);
+            mainHandler.removeCallbacks(resumeQueryRunnable);
         }
     };
 
@@ -151,7 +151,7 @@ public class ContactsManagerImpl {
             contactsObserver = null;
         }
         reactApplicationContext.removeLifecycleEventListener(lifecycleListener);
-        resumeHandler.removeCallbacks(resumeQueryRunnable);
+        mainHandler.removeCallbacks(resumeQueryRunnable);
         pendingDirty = false;
     }
 
@@ -214,7 +214,7 @@ public class ContactsManagerImpl {
         final long syncTimestamp = currentTime;
 
         // Post state update back to main thread to avoid race with onHostResume
-        new Handler(Looper.getMainLooper()).post(() -> {
+        mainHandler.post(() -> {
             pendingSyncTimestamp = syncTimestamp;
             if (error) {
                 pendingDropEverything = true;
