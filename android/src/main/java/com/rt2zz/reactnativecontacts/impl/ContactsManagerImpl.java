@@ -98,6 +98,8 @@ public class ContactsManagerImpl {
             // the burst into one RNContacts:changed event after writes settle.
             handler.removeCallbacks(emitRunnable);
             handler.postDelayed(emitRunnable, 500);
+            // Cancel pending flush — more changes may be arriving
+            flushHandler.removeCallbacks(flushRunnable);
         }
     }
 
@@ -106,7 +108,10 @@ public class ContactsManagerImpl {
         public void onHostResume() {
             isAppForegrounded = true;
             if (pendingEvent && listenerCount > 0) {
-                emitContactsChanged();
+                // Debounced flush — give pending observer debounces and queries
+                // time to complete and accumulate before emitting.
+                flushHandler.removeCallbacks(flushRunnable);
+                flushHandler.postDelayed(flushRunnable, 500);
             }
         }
 
@@ -227,7 +232,7 @@ public class ContactsManagerImpl {
 
             if (listenerCount > 0 && isAppForegrounded) {
                 flushHandler.removeCallbacks(flushRunnable);
-                flushHandler.postDelayed(flushRunnable, 200);
+                flushHandler.postDelayed(flushRunnable, 500);
             }
         });
     }
