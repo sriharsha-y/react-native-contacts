@@ -191,17 +191,12 @@ public class ContactsManagerImpl {
             hasError = true;
         }
 
-        // Fetch full contact objects for upserted IDs
+        // Fetch full contact objects for upserted IDs in a single query
         WritableArray upsertedContacts = Arguments.createArray();
         if (!hasError && !upsertedIdsList.isEmpty()) {
             ContentResolver cr = reactApplicationContext.getContentResolver();
             ContactsProvider contactsProvider = new ContactsProvider(cr);
-            for (String contactId : upsertedIdsList) {
-                WritableMap contact = contactsProvider.getContactById(contactId);
-                if (contact != null) {
-                    upsertedContacts.pushMap(contact);
-                }
-            }
+            upsertedContacts = contactsProvider.getContactsByIds(upsertedIdsList);
         }
 
         final boolean error = hasError;

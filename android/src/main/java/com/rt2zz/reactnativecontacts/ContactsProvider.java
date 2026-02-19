@@ -15,6 +15,7 @@ import com.facebook.react.bridge.WritableMap;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -231,6 +232,32 @@ public class ContactsProvider {
         }
 
         return null;
+    }
+
+    public WritableArray getContactsByIds(List<String> contactIds) {
+        String placeholders = TextUtils.join(",", Collections.nCopies(contactIds.size(), "?"));
+        String selection = ContactsContract.RawContacts.CONTACT_ID + " IN (" + placeholders + ")";
+        String[] selectionArgs = contactIds.toArray(new String[0]);
+
+        Cursor cursor = contentResolver.query(
+                ContactsContract.Data.CONTENT_URI,
+                FULL_PROJECTION.toArray(new String[FULL_PROJECTION.size()]),
+                selection, selectionArgs, null);
+
+        Map<String, Contact> contacts;
+        try {
+            contacts = loadContactsFrom(cursor);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        WritableArray result = Arguments.createArray();
+        for (Contact contact : contacts.values()) {
+            result.pushMap(contact.toMap());
+        }
+        return result;
     }
 
     public Integer getContactsCount() {
