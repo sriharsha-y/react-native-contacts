@@ -75,6 +75,13 @@ public class ContactsManagerImpl {
     private WritableArray pendingUpsertedContacts;
     private WritableArray pendingDeletedIds;
 
+    private final Handler flushHandler = new Handler(Looper.getMainLooper());
+    private final Runnable flushRunnable = () -> {
+        if (pendingEvent && listenerCount > 0 && isAppForegrounded) {
+            emitContactsChanged();
+        }
+    };
+
     private class ContactsContentObserver extends ContentObserver {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final Runnable emitRunnable = () -> {
@@ -128,6 +135,7 @@ public class ContactsManagerImpl {
             contactsObserver = null;
         }
         reactApplicationContext.removeLifecycleEventListener(lifecycleListener);
+        flushHandler.removeCallbacks(flushRunnable);
     }
 
     private void queryChangesAndEmit() {
@@ -199,13 +207,27 @@ public class ContactsManagerImpl {
                 // Duplicate notification — nothing actually changed. Don't emit.
                 return;
             } else {
-                pendingUpsertedContacts = upserted;
-                pendingDeletedIds = deleted;
+                // Accumulate instead of replace so rapid changes batch into one event
+                if (pendingUpsertedContacts != null) {
+                    for (int i = 0; i < upserted.size(); i++) {
+                        pendingUpsertedContacts.pushMap((WritableMap) upserted.getMap(i));
+                    }
+                } else {
+                    pendingUpsertedContacts = upserted;
+                }
+                if (pendingDeletedIds != null) {
+                    for (int i = 0; i < deleted.size(); i++) {
+                        pendingDeletedIds.pushString(deleted.getString(i));
+                    }
+                } else {
+                    pendingDeletedIds = deleted;
+                }
                 pendingEvent = true;
             }
 
             if (listenerCount > 0 && isAppForegrounded) {
-                emitContactsChanged();
+                flushHandler.removeCallbacks(flushRunnable);
+                flushHandler.postDelayed(flushRunnable, 200);
             }
         });
     }

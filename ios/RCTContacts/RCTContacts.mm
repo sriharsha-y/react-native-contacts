@@ -21,6 +21,7 @@
     NSArray *pendingUpsertedContacts;
     NSArray *pendingDeletedIds;
     dispatch_block_t pendingFetchBlock;
+    dispatch_block_t pendingFlushBlock;
 }
 
 - (instancetype)init
@@ -90,6 +91,10 @@ RCT_EXPORT_MODULE();
     if (pendingFetchBlock) {
         dispatch_block_cancel(pendingFetchBlock);
         pendingFetchBlock = nil;
+    }
+    if (pendingFlushBlock) {
+        dispatch_block_cancel(pendingFlushBlock);
+        pendingFlushBlock = nil;
     }
 }
 
@@ -213,12 +218,25 @@ RCT_EXPORT_MODULE();
             // Nothing changed — likely a duplicate notification. Don't emit.
             return;
         } else {
-            pendingUpsertedContacts = upserted;
-            pendingDeletedIds = deleted;
+            // Accumulate instead of replace so rapid changes batch into one event
+            if (pendingUpsertedContacts) {
+                NSMutableArray *merged = [NSMutableArray arrayWithArray:pendingUpsertedContacts];
+                [merged addObjectsFromArray:upserted];
+                pendingUpsertedContacts = [merged copy];
+            } else {
+                pendingUpsertedContacts = upserted;
+            }
+            if (pendingDeletedIds) {
+                NSMutableArray *merged = [NSMutableArray arrayWithArray:pendingDeletedIds];
+                [merged addObjectsFromArray:deleted];
+                pendingDeletedIds = [merged copy];
+            } else {
+                pendingDeletedIds = deleted;
+            }
         }
         pendingEvent = YES;
         if (listenerCount > 0 && [self isAppActive]) {
-            [self flushPendingEvent];
+            [self scheduleFlush];
         }
     });
 }
@@ -256,6 +274,22 @@ RCT_EXPORT_MODULE();
     pendingDropEverything = NO;
     pendingUpsertedContacts = nil;
     pendingDeletedIds = nil;
+}
+
+- (void)scheduleFlush {
+    if (pendingFlushBlock) {
+        dispatch_block_cancel(pendingFlushBlock);
+    }
+    pendingFlushBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
+        if (self->pendingEvent && self->listenerCount > 0 && [self isAppActive]) {
+            [self flushPendingEvent];
+        }
+    });
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(200 * NSEC_PER_MSEC)),
+        dispatch_get_main_queue(),
+        pendingFlushBlock
+    );
 }
 
 #pragma mark - Constants
